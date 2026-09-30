@@ -186,7 +186,7 @@ def multi_ledger_match(
             interest_total_cell = info.get("interest_total_cell", None)
             # Interest formula references supplier's own sheet/cell, else 0
             interest_formula = f"='{safe_name}'!{interest_total_cell}" if interest_total_cell else 0
-            summary_data.append([sup_name, delayed_rows, "", interest_formula])
+            summary_data.append([sup_name, delayed_rows, gst_rate, interest_formula])
 
         ws_summary = wb.create_sheet(title="Summary", index=0)
         ws_summary.append(summary_headers)

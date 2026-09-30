@@ -39,4 +39,4 @@ def process_payment_matcher(
             output_path
         )
 
-    return output_path
+    return input_path, output_path
