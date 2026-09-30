@@ -18,6 +18,12 @@ async def payment_matcher(
     delay_threshold: int = Form(...),
     gst_rate: float = Form(...)
 ):
+    if delay_threshold < 0:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Delay threshold must be non-negative.")
+    if gst_rate <= 0:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="GST rate must be greater than zero.")
 
     input_path, output_path = process_payment_matcher(
         file,
