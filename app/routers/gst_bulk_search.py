@@ -27,7 +27,11 @@ def is_valid_gstin(value):
 async def gst_bulk_search(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(None),
-    gstins_text: str = Form(None)
+    gstins_text: str = Form(None),
+    search_mode: str = Form("taxpayer"),
+    financial_year: str = Form("2024-25"),
+    month: str = Form("All"),
+    return_type: str = Form("Both")
 ):
     gstins = []
 
@@ -65,80 +69,119 @@ async def gst_bulk_search(
 
     output_dir = "app/temp"
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f"GST_Bulk_Search_{os.getpid()}_{int(os.path.exists(output_dir))}.xlsx")
 
     try:
         model_path = os.path.join("app", "engines", "captcha_model.onnx")
         client = GSTClient(model_path=model_path)
 
-        taxpayers = []
-        returns = []
+        if search_mode == "taxpayer":
+            output_path = os.path.join(output_dir, f"GST_Taxpayer_Details_{os.getpid()}_{int(os.path.exists(output_dir))}.xlsx")
+            taxpayers = []
 
-        for gstin in gstins:
-            try:
-                tp_data = client.get_taxpayer_details(gstin)
-                if isinstance(tp_data, dict) and tp_data.get("gstin"):
-                    goods_data = {}
-                    try:
-                        goods_data = client.get_goods_services(gstin)
-                    except Exception as ge:
-                        print(f"Error fetching goods/services for {gstin}: {ge}")
+            for gstin in gstins:
+                try:
+                    tp_data = client.get_taxpayer_details(gstin)
+                    if isinstance(tp_data, dict) and tp_data.get("gstin"):
+                        goods_data = {}
+                        try:
+                            goods_data = client.get_goods_services(gstin)
+                        except Exception as ge:
+                            print(f"Error fetching goods/services for {gstin}: {ge}")
 
-                    record = client.build_taxpayer_record(tp_data, goods_data)
-                    taxpayers.append(record)
-                else:
+                        record = client.build_taxpayer_record(tp_data, goods_data)
+                        taxpayers.append(record)
+                    else:
+                        taxpayers.append({
+                            "GSTIN": gstin,
+                            "Processing Status": "Failed",
+                            "Error / Remarks": "Invalid taxpayer response"
+                        })
+                except Exception as e:
+                    print(f"Error fetching taxpayer {gstin}: {e}")
                     taxpayers.append({
                         "GSTIN": gstin,
                         "Processing Status": "Failed",
-                        "Error / Remarks": "Invalid taxpayer response"
+                        "Error / Remarks": str(e)
                     })
 
-                for fy in ["2024-25", "2023-24"]:
-                    try:
-                        ret_resp = client.get_return_details(gstin, fy)
-                        if isinstance(ret_resp, dict):
-                            flat_rets = client.flatten_returns(ret_resp)
-                            for ret in flat_rets:
-                                if isinstance(ret, dict):
-                                    returns.append({
-                                        "GSTIN": gstin,
-                                        "Legal Name": tp_data.get("lgnm", "") if isinstance(tp_data, dict) else "",
-                                        "Financial Year": fy,
-                                        "Month": ret.get("retprd", ret.get("mth", "")),
-                                        "GSTR-1 Status": ret.get("rtntyp") == "GSTR1" and ret.get("status") or ret.get("gstr1Sts", ""),
-                                        "GSTR-1 Filing Date": ret.get("dof", ""),
-                                        "GSTR-3B Status": ret.get("rtntyp") == "GSTR3B" and ret.get("status") or ret.get("gstr3bSts", ""),
-                                        "GSTR-3B Filing Date": ret.get("dof", ""),
-                                        "Processing Status": "Success",
-                                        "Error / Remarks": ""
-                                    })
-                    except Exception as re:
-                        print(f"Error fetching returns for {gstin} {fy}: {re}")
+            save_taxpayer_records(taxpayers, output_path)
+            report_filename = "GST_Taxpayer_Details_Report.xlsx"
 
-            except Exception as e:
-                print(f"Error fetching {gstin}: {e}")
-                taxpayers.append({
-                    "GSTIN": gstin,
-                    "Processing Status": "Failed",
-                    "Error / Remarks": str(e)
-                })
-
-        save_taxpayer_records(taxpayers, output_path)
-        if returns:
-            save_return_records(returns, output_path)
         else:
-            save_return_records([{
-                "GSTIN": gstins[0],
-                "Legal Name": "",
-                "Financial Year": "2024-25",
-                "Month": "",
-                "GSTR-1 Status": "",
-                "GSTR-1 Filing Date": "",
-                "GSTR-3B Status": "",
-                "GSTR-3B Filing Date": "",
-                "Processing Status": "Notice",
-                "Error / Remarks": "No return filing records returned"
-            }], output_path)
+            # Return filing status mode
+            output_path = os.path.join(output_dir, f"GST_Return_Status_{os.getpid()}_{int(os.path.exists(output_dir))}.xlsx")
+            returns_records = []
+
+            # financial_year e.g. "2024-25" -> fy = "2024"
+            fy = financial_year.split("-")[0] if "-" in financial_year else financial_year
+
+            for gstin in gstins:
+                record = {
+                    "GSTIN": gstin,
+                    "Legal Name": "",
+                    "Financial Year": financial_year,
+                    "Month": month,
+                    "GSTR-1 Status": "",
+                    "GSTR-1 Filing Date": "",
+                    "GSTR-3B Status": "",
+                    "GSTR-3B Filing Date": "",
+                    "Processing Status": "Success",
+                    "Error / Remarks": ""
+                }
+
+                try:
+                    # Get taxpayer details first for legal name
+                    try:
+                        taxpayer = client.get_taxpayer_details(gstin)
+                        if isinstance(taxpayer, dict):
+                            record["Legal Name"] = taxpayer.get("lgnm", "")
+                    except Exception as te:
+                        print(f"Error fetching taxpayer name for {gstin}: {te}")
+
+                    return_data = client.get_return_details(gstin, fy)
+                    returns_list = client.flatten_returns(return_data)
+
+                    gstr1 = None
+                    gstr3b = None
+
+                    for item in returns_list:
+                        if not isinstance(item, dict):
+                            continue
+                        item_month = str(item.get("taxp", item.get("mth", ""))).strip()
+                        rtn_typ = str(item.get("rtntype", "")).strip().upper()
+
+                        if month != "All" and item_month.lower() != month.lower():
+                            continue
+
+                        if rtn_typ in ["GSTR1", "GSTR-1"]:
+                            gstr1 = item
+                        elif rtn_typ in ["GSTR3B", "GSTR-3B"]:
+                            gstr3b = item
+
+                    if return_type in ["Both", "GSTR-1"]:
+                        if gstr1:
+                            record["GSTR-1 Status"] = gstr1.get("status", "")
+                            record["GSTR-1 Filing Date"] = gstr1.get("dof", "")
+                        else:
+                            record["GSTR-1 Status"] = "No filing record found"
+
+                    if return_type in ["Both", "GSTR-3B"]:
+                        if gstr3b:
+                            record["GSTR-3B Status"] = gstr3b.get("status", "")
+                            record["GSTR-3B Filing Date"] = gstr3b.get("dof", "")
+                        else:
+                            record["GSTR-3B Status"] = "No filing record found"
+
+                    returns_records.append(record)
+
+                except Exception as e:
+                    print(f"Error fetching returns for {gstin}: {e}")
+                    record["Processing Status"] = "Failed"
+                    record["Error / Remarks"] = str(e)
+                    returns_records.append(record)
+
+            save_return_records(returns_records, output_path)
+            report_filename = "GST_Return_Status_Report.xlsx"
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GST bulk search processing failed: {str(e)}")
@@ -154,5 +197,5 @@ async def gst_bulk_search(
 
     return FileResponse(
         output_path,
-        filename="GST_Bulk_Search_Report.xlsx"
+        filename=report_filename
     )
