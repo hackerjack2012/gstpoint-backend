@@ -3,7 +3,7 @@ import time
 
 import requests
 
-from captcha_solver import CaptchaSolver
+from app.engines.captcha_solver import CaptchaSolver
 
 
 BASE_URL = "https://services.gst.gov.in"
