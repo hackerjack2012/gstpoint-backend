@@ -77,17 +77,68 @@ async def gst_bulk_search(
         for gstin in gstins:
             try:
                 tp_data = client.get_taxpayer_details(gstin)
-                if tp_data:
-                    taxpayers.append(tp_data)
-                ret_data = client.get_return_filings(gstin)
-                if ret_data:
-                    returns.append(ret_data)
+                if isinstance(tp_data, dict) and tp_data.get("gstin"):
+                    goods_data = {}
+                    try:
+                        goods_data = client.get_goods_services(gstin)
+                    except Exception as ge:
+                        print(f"Error fetching goods/services for {gstin}: {ge}")
+
+                    record = client.build_taxpayer_record(tp_data, goods_data)
+                    taxpayers.append(record)
+                else:
+                    taxpayers.append({
+                        "GSTIN": gstin,
+                        "Processing Status": "Failed",
+                        "Error / Remarks": "Invalid taxpayer response"
+                    })
+
+                for fy in ["2024-25", "2023-24"]:
+                    try:
+                        ret_resp = client.get_return_details(gstin, fy)
+                        if isinstance(ret_resp, dict):
+                            flat_rets = client.flatten_returns(ret_resp)
+                            for ret in flat_rets:
+                                if isinstance(ret, dict):
+                                    returns.append({
+                                        "GSTIN": gstin,
+                                        "Legal Name": tp_data.get("lgnm", "") if isinstance(tp_data, dict) else "",
+                                        "Financial Year": fy,
+                                        "Month": ret.get("retprd", ret.get("mth", "")),
+                                        "GSTR-1 Status": ret.get("rtntyp") == "GSTR1" and ret.get("status") or ret.get("gstr1Sts", ""),
+                                        "GSTR-1 Filing Date": ret.get("dof", ""),
+                                        "GSTR-3B Status": ret.get("rtntyp") == "GSTR3B" and ret.get("status") or ret.get("gstr3bSts", ""),
+                                        "GSTR-3B Filing Date": ret.get("dof", ""),
+                                        "Processing Status": "Success",
+                                        "Error / Remarks": ""
+                                    })
+                    except Exception as re:
+                        print(f"Error fetching returns for {gstin} {fy}: {re}")
+
             except Exception as e:
                 print(f"Error fetching {gstin}: {e}")
+                taxpayers.append({
+                    "GSTIN": gstin,
+                    "Processing Status": "Failed",
+                    "Error / Remarks": str(e)
+                })
 
-        save_taxpayer_records(output_path, taxpayers)
+        save_taxpayer_records(taxpayers, output_path)
         if returns:
-            save_return_records(output_path, returns)
+            save_return_records(returns, output_path)
+        else:
+            save_return_records([{
+                "GSTIN": gstins[0],
+                "Legal Name": "",
+                "Financial Year": "2024-25",
+                "Month": "",
+                "GSTR-1 Status": "",
+                "GSTR-1 Filing Date": "",
+                "GSTR-3B Status": "",
+                "GSTR-3B Filing Date": "",
+                "Processing Status": "Notice",
+                "Error / Remarks": "No return filing records returned"
+            }], output_path)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GST bulk search processing failed: {str(e)}")
